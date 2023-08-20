@@ -1,131 +1,173 @@
 import tkinter as tk
-from tkinter import filedialog
-import csv
-from datetime import datetime
+from tkinter import filedialog, messagebox
+import cv2
+import os
+import threading
+import time
+import pandas as pd
 
-class MouseTrackerApp:
+class VideoPlayerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Mouse Tracker App")
-        self.root.geometry("400x350")
+        self.root.title("Video Player App")
 
-        self.tracking = False
-        self.log_file = None
-        self.block_height = 150
-        self.starting_y = 100  # 色ブロックの始まりのy軸座標
+        self.video_path = ""
+        self.human_video_path = ""
 
-        self.create_widgets()
+        self.video_label = tk.Label(root, text="Select the video to play (mp4 format only):")
+        self.video_label.pack(pady=10)
 
-    def create_widgets(self):
-        self.folder_select_btn = tk.Button(self.root, text="Select Folder", command=self.select_folder)
-        self.folder_select_btn.pack(pady=10)
+        self.select_button = tk.Button(root, text="Select Video", command=self.select_video)
+        self.select_button.pack(pady=5)
 
-        self.start_btn = tk.Button(self.root, text="Start Tracking", command=self.start_tracking, state=tk.DISABLED)
-        self.start_btn.pack(pady=10)
+        self.play_button = tk.Button(root, text="Play Video", command=self.play_and_capture)
+        self.play_button.pack(pady=5)
 
-        self.stop_btn = tk.Button(self.root, text="Stop Tracking", command=self.stop_tracking, state=tk.DISABLED)
-        self.stop_btn.pack(pady=10)
+        self.name_entry_label = tk.Label(root, text="Enter your name:")
+        self.name_entry_label.pack(pady=5)
 
-        self.scale_label = tk.Label(self.root, text="Mouse Position Scale:")
-        self.scale_label.pack()
+        self.name_entry = tk.Entry(root)
+        self.name_entry.pack(pady=5)
 
-        self.scale_canvas = tk.Canvas(self.root, width=300, height=20, bg="white")
-        self.scale_canvas.pack()
+        self.video_player = None
+        self.camera_thread = None
+        self.is_capturing = False
+        self.stop_camera = False
 
-        self.tracking_window = None
-        self.blocks_canvas = None
+        self.start_time_label = tk.Label(root, text="Video Start Time:")
+        self.start_time_label.pack(pady=5)
 
-    def select_folder(self):
-        folder_path = filedialog.askdirectory()
-        if folder_path:
-            self.log_file = f"{folder_path}/mouse_log.csv"
-            self.start_btn.config(state=tk.NORMAL)
+        self.camera_start_time_label = tk.Label(root, text="Camera Start Time:")
+        self.camera_start_time_label.pack(pady=5)
 
-    def start_tracking(self):
-        if self.log_file:
-            self.tracking = True
-            self.start_btn.config(state=tk.DISABLED)
-            self.stop_btn.config(state=tk.NORMAL)
-            self.folder_select_btn.config(state=tk.DISABLED)
+        self.end_time_label = tk.Label(root, text="End Time:")
+        self.end_time_label.pack(pady=5)
 
-            # Create a new window for mouse tracking
-            self.tracking_window = tk.Toplevel(self.root)
-            self.tracking_window.title("Mouse Tracking Window")
+        self.timestamps = []
 
-            # 色ブロックのウィンドウサイズを縦方向に3倍に設定
-            window_width = 400
-            window_height = 960
-            self.tracking_window.geometry(f"{window_width}x{window_height}")
+    def select_video(self):
+        self.video_path = filedialog.askopenfilename(title="Select Video File", filetypes=[("Video files", "*.mp4")])
 
-            # Disable resizing of the tracking window
-            self.tracking_window.resizable(0, 0)
+        if self.video_path:
+            self.video_label.config(text=f"Selected video: {os.path.basename(self.video_path)}")
 
-            # Create canvas for blocks
-            self.blocks_canvas = tk.Canvas(self.tracking_window, width=300, height=900, bg="white")
-            self.blocks_canvas.pack()
+    def modify_video_path(self, name):
+        directory, filename = os.path.split(self.video_path)
+        new_directory = os.path.join(directory, name).replace("\\", "/")
 
-            # Bind mouse events to the tracking window
-            self.tracking_window.bind("<Motion>", self.on_mouse_motion)
+        if not os.path.exists(new_directory):
+            os.makedirs(new_directory)
+        return new_directory
 
-            # Create and write CSV header
-            with open(self.log_file, mode='w', newline='') as csvfile:
-                fieldnames = ['timestamp', 'x', 'y', 'scale']
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                writer.writeheader()
+    def play_and_capture(self):
+        if not self.video_path:
+            messagebox.showerror("Error", "Please select a video to play.")
+            return
 
-            # Start logging mouse position
-            self.log_mouse_position()
+        name = self.name_entry.get()
+        if not name:
+            messagebox.showerror("Error", "Please enter your name.")
+            return
 
-    def stop_tracking(self):
-        self.tracking = False
-        self.start_btn.config(state=tk.NORMAL)
-        self.stop_btn.config(state=tk.DISABLED)
-        self.folder_select_btn.config(state=tk.NORMAL)
+        self.is_capturing = True
+        self.camera_thread = threading.Thread(target=self.capture_frames, args=(name,))
+        self.camera_thread.start()
 
-        # Unbind mouse events when tracking stops
-        if self.tracking_window:
-            self.tracking_window.unbind("<Motion>")
-            self.tracking_window.destroy()
-            self.tracking_window = None
-            self.blocks_canvas = None
+        start_time = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.start_time_label.config(text="Video Start Time: " + start_time)
+        self.camera_start_time_label.config(text="Camera Start Time: " + start_time)
 
-    def on_mouse_motion(self, event):
-        if self.tracking:
-            # Update the scale display
-            self.update_scale_display(event.y)
+        self.set_play_button_text("Playing")
 
-            # Update the blocks canvas
-            scale_value = 4 - min(max((event.y - self.starting_y) // self.block_height, 0), 4)
-            self.update_blocks_canvas(scale_value)
+        # Set a delay
+        delay = 2  # 2 seconds delay
+        time.sleep(delay)
 
-            # Log mouse position to CSV
-            self.log_mouse_position_to_csv(event.x, event.y, scale_value)
+        self.play_video()
 
-    def log_mouse_position_to_csv(self, x, y, scale_value):
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        with open(self.log_file, mode='a', newline='') as csvfile:
-            fieldnames = ['timestamp', 'x', 'y', 'scale']
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writerow({'timestamp': timestamp, 'x': x, 'y': y, 'scale': scale_value})
+        self.is_capturing = False
+        self.camera_thread.join()
 
-    def update_scale_display(self, y):
-        # Map the cursor position to a 5-level scale (0 to 4)
-        scale_value = 4 - min(max((y - self.starting_y) // self.block_height, 0), 4)
+        end_time = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.end_time_label.config(text="End Time: " + end_time)
 
-        # Clear the scale canvas and draw the colored scale bar
-        self.scale_canvas.delete("all")
-        colors = ["blue", "red", "orange", "yellow", "green"]
-        self.scale_canvas.create_rectangle(0, 0, 300, 20, fill=colors[scale_value], outline="")
-        self.scale_canvas.create_text(150, 10, text=f"Scale: {scale_value}", fill="black")
+        self.save_times_to_file(name, start_time, end_time)
 
-    def update_blocks_canvas(self, scale_value):
-        # Clear the blocks canvas and draw the blocks based on the scale
-        self.blocks_canvas.delete("all")
-        colors = ["green", "yellow", "orange", "red", "blue"]
-        for i in range(5):
-            self.blocks_canvas.create_rectangle(0, i * self.block_height + self.starting_y, 300, (i + 1) * self.block_height + self.starting_y, fill=colors[i], outline="")
+    def set_play_button_text(self, text):
+        self.play_button.config(text=text)
+
+    def save_times_to_file(self, name, start_time, end_time):
+        video_folder = os.path.dirname(self.video_path)
+        output_filename = os.path.join(video_folder, f"{name}_video_times.txt")
+
+        with open(output_filename, "w") as file:
+            file.write(f"Video Start Time: {start_time}\n")
+            file.write(f"Camera Start Time: {start_time}\n")
+            file.write(f"End Time: {end_time}")
+
+    def play_video(self):
+        cap = cv2.VideoCapture(self.video_path)
+        video_fps = cap.get(cv2.CAP_PROP_FPS)
+
+        self.video_start_time = time.time()
+
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            time.sleep(1 / video_fps)
+            cv2.imshow("Video Player", frame)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                break
+            elif key == ord(' '):
+                self.record_timestamp()
+
+        cap.release()
+        cv2.destroyAllWindows()
+        self.stop_camera = True
+
+    def record_timestamp(self):
+        if self.video_start_time is not None:
+            elapsed_time = time.time() - self.video_start_time
+            self.timestamps.append(elapsed_time)
+            self.save_timestamps_to_csv()
+
+    def save_timestamps_to_csv(self):
+        if self.timestamps:
+            csv_file = os.path.join(self.human_video_path, "timestamps.csv").replace("\\", "/")
+            data = {"Elapsed Time (seconds)": self.timestamps}
+            df = pd.DataFrame(data)
+            df.to_csv(csv_file, index=False)
+
+    def capture_frames(self, name):
+        camera_w = 1280
+        camera_h = 720
+
+        capture = cv2.VideoCapture(0)
+        capture.set(cv2.CAP_PROP_FRAME_WIDTH, camera_w)
+        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, camera_h)
+
+        camera_fps = capture.get(cv2.CAP_PROP_FPS)
+
+        fourcc = cv2.VideoWriter_fourcc(*'XVID')
+        self.human_video_path = self.modify_video_path(name)
+        output_filename = os.path.join(self.human_video_path, f"{name}_{os.path.splitext(os.path.basename(self.video_path))[0]}.avi").replace("\\", "/")
+        out = cv2.VideoWriter(output_filename, fourcc, camera_fps, (camera_w, camera_h))
+
+        while self.is_capturing and not self.stop_camera:
+            ret, frame = capture.read()
+            if not ret:
+                break
+
+            out.write(frame)
+
+        capture.release()
+        out.release()
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = MouseTrackerApp(root)
+    app = VideoPlayerApp(root)
     root.mainloop()
